@@ -21,15 +21,6 @@ func mockKratosPublicAPI(schemaID string, statusCode int, body string) *httptest
 	return httptest.NewServer(handler)
 }
 
-func mockKratosAdminAPI(identityID string, statusCode int, body string) *httptest.Server {
-	handler := http.NewServeMux()
-	handler.HandleFunc("/identities/"+identityID, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(statusCode)
-		w.Write([]byte(body))
-	})
-	return httptest.NewServer(handler)
-}
-
 func TestWebhookHandler(t *testing.T) {
 	// Define mock responses for the Kratos API
 	publicAPIResponse := `{
@@ -48,36 +39,27 @@ func TestWebhookHandler(t *testing.T) {
 		}
 	}`
 
-	adminAPIResponse := `{
-		"id": "identity123",
-		"schema_id": "schema123",
-		"traits": {
-			"email": "test@example.com",
-			"username": "testuser"
-		}
-	}`
+
+	oldTraits := map[string]interface{}{
+		"username": "oldusername",
+		"email": "oldemail@example.com",
+	}
 
 	// Mock Kratos Public and Admin APIs
 	publicAPIServer := mockKratosPublicAPI("schema123", http.StatusOK, publicAPIResponse)
 	defer publicAPIServer.Close()
 
-	adminAPIServer := mockKratosAdminAPI("identity123", http.StatusOK, adminAPIResponse)
-	defer adminAPIServer.Close()
-
 	// Set environment variables for the test
 	os.Setenv("KRATOS_PUBLIC_URL", publicAPIServer.URL)
-	os.Setenv("KRATOS_ADMIN_URL", adminAPIServer.URL)
 
 	// Test case 1: Modifying a mutable trait (username)
 	t.Run("Modifying mutable trait", func(t *testing.T) {
 		webhookRequest := WebhookRequest{
-			Identity: Identity{
-				ID:       "identity123",
-				SchemaID: "schema123",
-				Traits: map[string]interface{}{
-					"username": "newusername",
-				},
+			SchemaID: "schema123",
+			NewTraits: map[string]interface{}{
+				"username": "newusername",
 			},
+			OldTraits: oldTraits,
 		}
 
 		requestBody, err := json.Marshal(webhookRequest)
@@ -100,13 +82,11 @@ func TestWebhookHandler(t *testing.T) {
 	// Test case 2: Modifying an immutable trait (email)
 	t.Run("Modifying immutable trait", func(t *testing.T) {
 		webhookRequest := WebhookRequest{
-			Identity: Identity{
-				ID:       "identity123",
-				SchemaID: "schema123",
-				Traits: map[string]interface{}{
-					"email": "newemail@example.com",
-				},
+			SchemaID: "schema123",
+			NewTraits: map[string]interface{}{
+				"email": "newemail@example.com",
 			},
+			OldTraits: oldTraits,
 		}
 
 		requestBody, err := json.Marshal(webhookRequest)
@@ -127,7 +107,7 @@ func TestWebhookHandler(t *testing.T) {
 
 	})
 
-	// Test case 3: Sending wrong JSON format (missing traits)
+	// Test case 3: Sending wrong JSON format
 	t.Run("Sending invalid JSON", func(t *testing.T) {
 		invalidJSON := `{"identity: {"id": "identity123", "schema_id": "schema123"}}`
 
@@ -158,13 +138,11 @@ func TestWebhookHandler(t *testing.T) {
 		os.Setenv("KRATOS_PUBLIC_URL", publicAPIFailureServer.URL)
 
 		webhookRequest := WebhookRequest{
-			Identity: Identity{
-				ID:       "identity123",
-				SchemaID: "schema123",
-				Traits: map[string]interface{}{
-					"username": "newusername",
-				},
+			SchemaID: "schema123",
+			NewTraits: map[string]interface{}{
+				"username": "newusername",
 			},
+			OldTraits: oldTraits,
 		}
 
 		requestBody, err := json.Marshal(webhookRequest)
@@ -184,40 +162,5 @@ func TestWebhookHandler(t *testing.T) {
 		}
 	})
 
-	// Test case 5: API response failure (admin Kratos API down)
-	t.Run("Admin API failure", func(t *testing.T) {
-		// Mock Kratos Admin API failure
-		adminAPIFailureServer := mockKratosAdminAPI("identity123", http.StatusInternalServerError, "")
-		defer adminAPIFailureServer.Close()
-
-		// Update environment variable
-		os.Setenv("KRATOS_ADMIN_URL", adminAPIFailureServer.URL)
-
-		webhookRequest := WebhookRequest{
-			Identity: Identity{
-				ID:       "identity123",
-				SchemaID: "schema123",
-				Traits: map[string]interface{}{
-					"username": "newusername",
-				},
-			},
-		}
-
-		requestBody, err := json.Marshal(webhookRequest)
-		if err != nil {
-			t.Fatalf("Failed to marshal request body: %v", err)
-		}
-
-		req := httptest.NewRequest(http.MethodPost, "/hooks/check-readonly-traits", nil)
-		req.Body = ioutil.NopCloser(bytes.NewReader(requestBody))
-
-		rr := httptest.NewRecorder()
-		handler := http.HandlerFunc(webhookHandler)
-		handler.ServeHTTP(rr, req)
-
-		if rr.Code != http.StatusInternalServerError {
-			t.Errorf("Expected status code %d, got %d", http.StatusInternalServerError, rr.Code)
-		}
-	})
 }
 
